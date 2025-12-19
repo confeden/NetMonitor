@@ -1,7 +1,6 @@
 # NetMonitor
 Супер-минималистичный монитор интернет-соединения для Windows.
-
-Отображает Ping или статус VPN поверх панели задач Windows.
+Отображает Ping или статус HTTP соединения в любом удобном месте экрана.
 
 <img src="https://i.ibb.co/j918fpcJ/Screenshot-2025-12-17-112623.png" alt="Screenshot 2025 12 17 112623" border="0"></a>
 
