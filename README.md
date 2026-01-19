@@ -16,9 +16,3 @@
 2. Поместите его в удобную для вас папку и запустите его.
 3. Перетащите окошко левой кнопкой мыши в любое удобное место.
 4. ПКМ по окошку для доступа к меню (Автозапуск / Выход).
-
-## Сборка из исходников
-Если вы хотите собрать .exe самостоятельно:
-```bash
-pip install requests pyinstaller
-pyinstaller --noconsole --onefile --icon=icon.ico --version-file=version_info.txt netmonitor.pyw
