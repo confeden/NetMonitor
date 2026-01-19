@@ -1,3 +1,14 @@
+# -----------------------------------------------------------------------------
+# Copyright (c) 2026 Brent
+#
+# This file is part of the NetMonitor project.
+#
+# All rights reserved. No part of this code may be reproduced, distributed,
+# or transmitted in any form or by any means, including photocopying, recording,
+# or other electronic or mechanical methods, without the prior written
+# permission of the copyright holder.
+# -----------------------------------------------------------------------------
+
 import tkinter as tk
 import time
 import threading
@@ -7,6 +18,9 @@ import sys
 import socket
 import winreg  # Модуль для работы с реестром
 import ctypes
+
+# === VERSION INFO ===
+VERSION = "1.2"
 
 # --- КОНФИГУРАЦИЯ ---
 PING_HOST = "8.8.8.8"
@@ -23,6 +37,10 @@ COLOR_OFFLINE = "#e74734"
 BG_COLOR = "#101010"
 TRANS_COLOR = "#000001" # Технический цвет для прозрачности
 WINDOW_ALPHA = 0.7
+
+# ПОРОГИ ЛАТЕНТНОСТИ (мс)
+LATENCY_GOOD = 150  # Зелёный
+LATENCY_WARN = 300  # Жёлтый
 
 CONFIG_FILE = "pos_config.json"
 APP_NAME = "NetMonitorUtility" # Имя ключа в реестре
@@ -61,30 +79,47 @@ class NetMonitorApp:
 
         # Создаем меню (пункты будут добавляться динамически)
         self.menu = tk.Menu(self.root, tearoff=0)
+        
+        # Кэшируем распарсенный URL для http_check
+        parts = HTTP_URL.split("/")
+        self._http_host = parts[2]
+        self._http_path = "/" + "/".join(parts[3:])
 
         self.running = True
         threading.Thread(target=self.worker_loop, daemon=True).start()
         self.keep_on_top()
+    
+    def get_autostart_cmd(self):
+        """Получить актуальную команду автозапуска (для текущего расположения EXE)"""
+        if getattr(sys, 'frozen', False):
+            # Режим EXE: используем текущий путь к exe (портативно!)
+            return os.path.abspath(sys.executable)
+        else:
+            # Режим скрипта: python + путь к скрипту
+            return f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
 
+    def set_geometry(self, geom):
+        """Helper: устанавливает геометрию для обоих окон"""
+        self.root.geometry(geom)
+        self.front.geometry(geom)
+    
     def load_position(self):
         try:
             with open(CONFIG_FILE, "r") as f:
                 d = json.load(f)
                 geom = f"+{d['x']}+{d['y']}"
-                self.root.geometry(geom)
-                self.front.geometry(geom)
+                self.set_geometry(geom)
                 self.alpha = d.get("alpha", WINDOW_ALPHA)
         except:
             sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
             geom = f"+{sw - 450}+{sh - 40}"
-            self.root.geometry(geom)
-            self.front.geometry(geom)
+            self.set_geometry(geom)
             self.alpha = WINDOW_ALPHA
         self.root.attributes("-alpha", self.alpha)
 
     def sync_windows(self, e=None):
         """Синхронизирует размер и позицию фона с текстом"""
-        if self.front.winfo_exists():
+        if self.front.winfo_exists() and self.root.winfo_exists():
             self.root.geometry(f"{self.front.winfo_width()}x{self.front.winfo_height()}+{self.front.winfo_x()}+{self.front.winfo_y()}")
 
     def save_position(self):
@@ -94,12 +129,12 @@ class NetMonitorApp:
         except: pass
 
     def start_move(self, e): self.x, self.y = e.x, e.y
+    
     def do_move(self, e): 
         new_x = self.front.winfo_x() + e.x - self.x
         new_y = self.front.winfo_y() + e.y - self.y
-        geom = f"+{new_x}+{new_y}"
-        self.root.geometry(geom)
-        self.front.geometry(geom)
+        self.set_geometry(f"+{new_x}+{new_y}")
+    
     def stop_move(self, e): self.save_position()
 
     # --- ЛОГИКА МЕНЮ ---
@@ -110,11 +145,22 @@ class NetMonitorApp:
         
         # Проверяем статус автозапуска
         is_enabled = False
-        cmd = f'"{sys.executable}"' if getattr(sys, 'frozen', False) else f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_READ) as key:
-                if winreg.QueryValueEx(key, APP_NAME)[0] == cmd: is_enabled = True
-        except: pass
+                registry_value = winreg.QueryValueEx(key, APP_NAME)[0]
+                
+                # Для режима скрипта: проверяем наличие пути к .pyw (игнорируем версию Python)
+                if not getattr(sys, 'frozen', False):
+                    script_path = os.path.abspath(sys.argv[0])
+                    if script_path.lower() in registry_value.lower():
+                        is_enabled = True
+                else:
+                    # Режим EXE: проверяем наличие APP_NAME в реестре (любой путь подходит)
+                    is_enabled = True
+        except FileNotFoundError:
+            pass  # Ключ не существует
+        except Exception:
+            pass  # Другие ошибки
             
         # Добавляем пункты
         self.menu.add_command(label="Выкл. автозапуск" if is_enabled else "Вкл. автозапуск", command=self.toggle_startup)
@@ -144,32 +190,38 @@ class NetMonitorApp:
         s.pack(fill="both", expand=True)
         
         # Закрываем при потере фокуса (клик вне окна)
+        def on_close(e):
+            self.save_position()
+            top.destroy()
+        
         s.focus_set()
-        top.bind("<FocusOut>", lambda e: [self.save_position(), top.destroy()])
+        top.bind("<FocusOut>", on_close)
         top.bind("<Escape>", lambda e: top.destroy())
 
     def toggle_startup(self):
-        cmd = f'"{sys.executable}"' if getattr(sys, 'frozen', False) else f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
         try:
             key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_ALL_ACCESS)
             try:
+                # Проверяем существование ключа
                 winreg.QueryValueEx(key, APP_NAME)
-                winreg.DeleteValue(key, APP_NAME) # Если ключ есть - удаляем
+                # Ключ существует - удаляем
+                winreg.DeleteValue(key, APP_NAME)
             except FileNotFoundError:
-                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, cmd) # Если нет - создаем
+                # Ключа нет - создаем с актуальным путем
+                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, self.get_autostart_cmd())
             winreg.CloseKey(key)
-        except Exception as e: print(f"Reg err: {e}")
+        except Exception:
+            pass  # Тихо игнорируем ошибки
 
     def set_alpha(self, val):
         self.alpha = float(val)
         self.root.attributes("-alpha", self.alpha)
 
     def keep_on_top(self):
+        # Поднимаем окна (attributes уже установлены в __init__)
         self.root.lift()
-        self.root.attributes("-topmost", True)
         self.front.lift()
-        self.front.attributes("-topmost", True)
-        self.root.after(3000, self.keep_on_top)
+        self.root.after(5000, self.keep_on_top)  # Проверка каждые 5 сек
 
     def fast_tcp_ping(self):
         try:
@@ -183,13 +235,9 @@ class NetMonitorApp:
     def http_check(self):
         try:
             start = time.time()
-            # Оптимизация: используем socket вместо urllib для уменьшения размера exe
-            parts = HTTP_URL.split("/")
-            host = parts[2]
-            path = "/" + "/".join(parts[3:])
-            
-            with socket.create_connection((host, 80), timeout=1.5) as s:
-                request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+            # Используем кэшированные значения из __init__
+            with socket.create_connection((self._http_host, 80), timeout=1.5) as s:
+                request = f"GET {self._http_path} HTTP/1.1\r\nHost: {self._http_host}\r\nConnection: close\r\n\r\n"
                 s.sendall(request.encode())
                 resp = s.recv(128) # Читаем только начало ответа
                 if b"HTTP/1.1 204" in resp:
@@ -212,13 +260,17 @@ class NetMonitorApp:
                 text, color = "OFFLINE", COLOR_OFFLINE
             else:
                 text = f"{mode}: {ms}"
-                if ms < 150: color = COLOR_ONLINE
-                elif ms < 300: color = COLOR_SLOW
-                else: color = COLOR_OFFLINE
+                if ms < LATENCY_GOOD: 
+                    color = COLOR_ONLINE
+                elif ms < LATENCY_WARN: 
+                    color = COLOR_SLOW
+                else: 
+                    color = COLOR_OFFLINE
             
             try:
                 self.root.after(0, lambda t=text, c=color: self.label.config(text=t, fg=c))
-            except: 
+            except Exception:
+                # Окно закрыто или ошибка в GUI - выходим
                 break
             time.sleep(CHECK_INTERVAL)
 
